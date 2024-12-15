@@ -1,0 +1,6 @@
+flask
+pandas
+torch
+transformers
+scikit-learn
+gunicorn
