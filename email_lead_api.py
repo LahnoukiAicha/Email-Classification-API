@@ -10,19 +10,22 @@ app = Flask(__name__)
 CORS(app)
 
 # Load pre-trained model and tokenizer from Hugging Face
-model_name = "alpha2002/model"  # Use your Hugging Face repository name
+model_name = "alpha2002/model"  # Replace with your Hugging Face repository
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+print("Loading model...")
 model = BertForSequenceClassification.from_pretrained(model_name).to(device)
 tokenizer = BertTokenizer.from_pretrained(model_name)
 model.eval()
+print("Model loaded successfully!")
 
 # Solution mapping (adjust if necessary)
 solution_mapping = {
-    0: "Marketing Cloud", 1: "Experience Cloud", 2: "Integration Cloud", 
+    0: "Marketing Cloud", 1: "Experience Cloud", 2: "Integration Cloud",
     3: "Sales Cloud", 4: "Analytics Cloud", 5: "Commerce Cloud", 6: "Service Cloud"
 }
 
+# Global variable to store classified emails
 classified_emails_data = []
 
 @app.route('/classify-emails', methods=['POST'])
@@ -33,18 +36,22 @@ def classify_emails():
         file = request.files.get('file')
         if not file or not file.filename.endswith('.csv'):
             return jsonify({'status': 'error', 'message': 'Invalid or missing CSV file'}), 400
-        
-        # Load and validate file
+
+        # Load CSV file into DataFrame
         client_data = pd.read_csv(file, delimiter=';')
-        required_columns = {'id_email', 'subject', 'email_text', 'annual_revenue', 
+        required_columns = {'id_email', 'subject', 'email_text', 'annual_revenue',
                             'engagement_score', 'email_opens', 'website_visits'}
         if not required_columns.issubset(client_data.columns):
             return jsonify({'status': 'error', 'message': 'Missing required columns'}), 400
-        
-        # Normalize numerical columns
-        scaler = MinMaxScaler()
-        for col in ['annual_revenue', 'engagement_score', 'email_opens', 'website_visits']:
-            client_data[col] = scaler.fit_transform(client_data[[col]])
+
+        # Clean and normalize numerical columns
+        try:
+            client_data['annual_revenue'] = client_data['annual_revenue'].replace('[\$,]', '', regex=True).replace(',', '', regex=True).astype(float)
+            columns_to_normalize = ['annual_revenue', 'engagement_score', 'email_opens', 'website_visits']
+            scaler = MinMaxScaler()
+            client_data[columns_to_normalize] = scaler.fit_transform(client_data[columns_to_normalize])
+        except ValueError as e:
+            return jsonify({'status': 'error', 'message': f"Data preprocessing error: {str(e)}"}), 400
 
         # Compute Lead Score
         weights = {'engagement_score': 0.4, 'website_visits': 0.3, 'annual_revenue': 0.2, 'email_opens': 0.1}
@@ -54,16 +61,18 @@ def classify_emails():
         texts = client_data['subject'] + " " + client_data['email_text']
         inputs = tokenizer(texts.tolist(), truncation=True, padding=True, max_length=128, return_tensors="pt").to(device)
 
-        # Predict solutions
+        # Predict solutions using the BERT model
         with torch.no_grad():
             outputs = model(**inputs)
             predictions = torch.argmax(outputs.logits, dim=1).cpu().numpy()
-        
+
+        # Map predictions to solutions
         client_data['Predicted_Solution'] = [solution_mapping[p] for p in predictions]
         classified_emails_data = client_data[['id_email', 'Predicted_Solution', 'Lead_Score']].to_dict(orient='records')
 
+        # Return JSON response
         return jsonify({'status': 'success', 'classified_emails': classified_emails_data})
-    
+
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
